@@ -41,7 +41,7 @@ interface EvaluationCenterProps {
 }
 
 const statuses: EvaluationStatus[] = ['待审核', '已通过', '需修改'];
-const difficulties: EvaluationDifficulty[] = ['基础', '进阶', '挑战'];
+const difficulties: EvaluationDifficulty[] = ['基础', '进阶', '困难'];
 const dimensionHelp: Record<EvaluationDimension, string> = {
   标准问答: '验证基础事实是否答对',
   同义改写: '验证换一种说法后仍能命中',
@@ -168,6 +168,17 @@ export function EvaluationCenter({ qaItems, items, museumName, activeModelName, 
     setNotice('已删除 1 条评测题。');
   }
 
+  function clearEvaluationItems() {
+    if (!items.length || runInProgress) return;
+    if (!window.confirm(`确认清空全部 ${items.length} 条测评题？此操作不可恢复。`)) return;
+    onItemsChange([]);
+    setSelectedId('');
+    setSearch('');
+    setDimensionFilter('全部');
+    setStatusFilter('全部');
+    setNotice(`已清空全部 ${items.length} 条测评题。`);
+  }
+
   function addManualBoundaryItem() {
     const qa = eligibleQa[0] ?? qaItems[0];
     if (!qa) return;
@@ -177,7 +188,7 @@ export function EvaluationCenter({ qaItems, items, museumName, activeModelName, 
       referenceAnswer: qa.answer,
       category: qa.category,
       dimension: '抗幻觉边界',
-      difficulty: '挑战',
+      difficulty: '困难',
       sourceQaId: qa.id,
       source: qa.source,
       scoringCriteria: '资料覆盖范围内如实回答；无法从资料确认的部分明确说明，不得编造。',
@@ -245,7 +256,22 @@ export function EvaluationCenter({ qaItems, items, museumName, activeModelName, 
 
       <div className="grid items-start gap-4 min-[1100px]:grid-cols-[minmax(240px,0.8fr)_minmax(0,1.2fr)]">
         <Card className="border-0 bg-card shadow-sm ring-border">
-          <div className="flex items-center justify-between border-b border-border px-4 pb-3"><div><p className="font-semibold">评测样本</p><p className="text-xs text-muted-foreground">显示 {filteredItems.length} 条</p></div></div>
+          <div className="flex items-center justify-between gap-3 border-b border-border px-4 pb-3">
+            <div>
+              <p className="font-semibold">评测样本</p>
+              <p className="text-xs text-muted-foreground">显示 {filteredItems.length} 条</p>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-[#8d4c3d] hover:bg-[#fff0ec] hover:text-[#8d4c3d]"
+              disabled={!items.length || runInProgress}
+              title={runInProgress ? '请先完成或停止当前任务' : '清空全部测评题'}
+              onClick={clearEvaluationItems}
+            >
+              <Trash2 /> 一键清空
+            </Button>
+          </div>
           <div className="max-h-[650px] overflow-y-auto px-2">{filteredItems.length ? filteredItems.map((item, index) => <button key={item.id} type="button" onClick={() => setSelectedId(item.id)} className={`my-2 w-full rounded-xl border p-3 text-left transition ${selected?.id === item.id ? 'border-ring bg-accent' : 'border-transparent hover:border-border hover:bg-muted'} ${item.status !== '待审核' ? 'opacity-65 saturate-75' : ''}`}><div className="flex items-start gap-3"><span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-muted text-xs font-semibold">{index + 1}</span><div className="min-w-0 flex-1"><div className="flex flex-wrap gap-2"><Badge className="border-0 bg-accent text-primary">{item.dimension}</Badge><Badge variant="outline">{item.difficulty}</Badge><Badge variant="outline">{item.status}</Badge></div><p className="mt-2 line-clamp-2 font-medium leading-6">{item.query}</p><p className="mt-1 truncate text-xs leading-5 text-muted-foreground">{item.referenceAnswer}</p></div></div></button>) : <div className="grid min-h-80 place-items-center px-8 text-center"><div><Target className="mx-auto size-9 text-muted-foreground/50" /><p className="mt-3 font-medium">还没有评测样本</p><p className="mt-1 text-xs text-muted-foreground">点击“生成测评集”开始。</p></div></div>}</div>
         </Card>
 

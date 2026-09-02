@@ -215,6 +215,33 @@ export async function inspectSourceFile(file: File): Promise<ParsedSourceFile> {
   const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
   const base = { id: createId(), fileName: file.name, size: file.size, extension };
 
+  if (extension === 'docx') {
+    try {
+      if (file.size > 20 * 1024 * 1024) throw new Error('单个 Word 文件不能超过 20 MB，请拆分后上传。');
+      const { extractDocxXml, docxSections } = await import('@/lib/review-material-reader');
+      const parsed = docxSections(extractDocxXml(new Uint8Array(await file.arrayBuffer())), file.name);
+      if (!parsed.sections.length) throw new Error('Word 中没有可用文字；图片或扫描内容请先进行 OCR。');
+      if (parsed.sections.reduce((sum, section) => sum + section.text.length, 0) > 1_000_000) throw new Error('Word 正文超过 100 万字符，请拆分后上传。');
+      return {
+        ...base,
+        warnings: parsed.warnings,
+        sheets: [{
+          name: '正文',
+          headers: ['正文'],
+          rows: parsed.sections.map((section) => ({ 正文: section.text })),
+          selected: true,
+          mapping: { question: '', answer: '', name: '' },
+        }],
+      };
+    } catch (error) {
+      return { ...base, sheets: [], error: `Word 解析失败：${error instanceof Error ? error.message : '请确认文件未损坏或加密。'}` };
+    }
+  }
+
+  if (extension === 'doc') {
+    return { ...base, sheets: [], error: '旧版 Word（.doc）请先另存为 .docx 后上传。' };
+  }
+
   if (extension === 'txt') {
     const paragraphs = (await file.text())
       .split(/\n\s*\n/)
@@ -233,7 +260,7 @@ export async function inspectSourceFile(file: File): Promise<ParsedSourceFile> {
   }
 
   if (!['xlsx', 'xls', 'csv'].includes(extension)) {
-    return { ...base, sheets: [], error: '暂不支持此文件格式。当前支持 PDF、Excel、CSV 和 TXT。' };
+    return { ...base, sheets: [], error: '暂不支持此文件格式。当前支持 PDF、Word（.docx）、Excel、CSV 和 TXT。' };
   }
 
   try {
@@ -261,7 +288,7 @@ export function generateQaFromParsedSources(sources: ParsedSourceFile[]) {
     .filter((sheet) => sheet.selected && sheet.rows.length)
     .flatMap((sheet) => {
       const sourceName = `${source.fileName} · ${sheet.name}`;
-      if (source.extension === 'txt' || source.extension === 'pdf') {
+      if (['txt', 'pdf', 'docx'].includes(source.extension)) {
         return textToQa(sheet.rows.map((row) => normalize(row['正文'])).join('\n\n'), sourceName);
       }
       return rowsToQa(sheet.rows, sourceName, sheet.mapping);

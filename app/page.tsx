@@ -125,7 +125,12 @@ export default function Home() {
             setNotice(`已恢复本地工作区，共 ${data.items.length} 条 QA。`);
           }
           if (data.history) setHistory(data.history);
-          if (data.evaluationItems) setEvaluationItems(data.evaluationItems);
+          if (data.evaluationItems) {
+            setEvaluationItems(data.evaluationItems.map((item) => ({
+              ...item,
+              difficulty: (item.difficulty as string) === '挑战' ? '困难' : item.difficulty,
+            })));
+          }
           if (data.models?.length) setModels(data.modelAssignments ? data.models : includeNewDefaultModels(data.models));
           setModelAssignments(restoreModelAssignments(data.modelAssignments, data.activeModelId ?? defaultModels[0].id));
         }

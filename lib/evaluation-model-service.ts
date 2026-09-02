@@ -49,7 +49,7 @@ function splitBatches<T>(list: T[], batchSize: number) {
   return batches;
 }
 
-const difficulties: EvaluationDifficulty[] = ['基础', '进阶', '挑战'];
+const difficulties: EvaluationDifficulty[] = ['基础', '进阶', '困难'];
 const CONCURRENCY = 3;
 
 export async function generateEvaluationWithModel(

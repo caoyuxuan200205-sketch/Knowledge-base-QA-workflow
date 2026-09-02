@@ -4,7 +4,7 @@ import type { KnowledgeCategory, QaItem } from '@/lib/museum-workflow';
 
 export const evaluationDimensions = ['标准问答', '同义改写', '口语表达', '要点完整性', '抗幻觉边界'] as const;
 export type EvaluationDimension = (typeof evaluationDimensions)[number];
-export type EvaluationDifficulty = '基础' | '进阶' | '挑战';
+export type EvaluationDifficulty = '基础' | '进阶' | '困难';
 export type EvaluationStatus = '待审核' | '已通过' | '需修改';
 
 export interface EvaluationItem {
@@ -73,7 +73,7 @@ export const difficultyByDimension: Record<EvaluationDimension, EvaluationDiffic
   同义改写: '进阶',
   口语表达: '进阶',
   要点完整性: '进阶',
-  抗幻觉边界: '挑战',
+  抗幻觉边界: '困难',
 };
 
 export const scoringByDimension: Record<EvaluationDimension, string> = {

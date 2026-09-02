@@ -8,6 +8,8 @@ import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu';
 import { inspectSourceFile, type ParsedSourceFile } from '@/lib/museum-workflow';
 
+const MAX_IMPORT_FILE_SIZE_MB = 20;
+
 export interface ImportHistoryItem {
   id: string;
   fileNames: string[];
@@ -44,12 +46,13 @@ function sourceRowCount(source: ParsedSourceFile) {
 
 function sourceDescription(source: ParsedSourceFile) {
   if (source.extension === 'pdf') return `${source.sheets.length} 页`;
+  if (source.extension === 'docx' || source.extension === 'doc') return 'Word 文档';
   if (source.extension === 'txt') return '文本资料';
   return `${source.sheets.length} 个工作表`;
 }
 
 function SourceIcon({ extension }: { extension: ParsedSourceFile['extension'] }) {
-  if (extension === 'pdf') return <FileText className="size-5" />;
+  if (['pdf', 'docx', 'doc'].includes(extension)) return <FileText className="size-5" />;
   if (extension === 'txt') return <File className="size-5" />;
   return <FileSpreadsheet className="size-5" />;
 }
@@ -70,6 +73,13 @@ export function ImportCenter({ sources, history, activeModelName, modelReady, en
     setBusy(true);
     try {
       const parsed = await Promise.all(files.map(async (file) => {
+        if (file.size > MAX_IMPORT_FILE_SIZE_MB * 1024 * 1024) {
+          return {
+            id: crypto.randomUUID(), fileName: file.name, size: file.size,
+            extension: file.name.split('.').pop()?.toLowerCase() ?? '', sheets: [],
+            error: `单个文件不能超过 ${MAX_IMPORT_FILE_SIZE_MB} MB，请拆分后上传。`,
+          } satisfies ParsedSourceFile;
+        }
         if (file.name.toLowerCase().endsWith('.pdf')) {
           const { inspectPdfFile } = await import('@/lib/pdf-client');
           return inspectPdfFile(file);
@@ -104,7 +114,7 @@ export function ImportCenter({ sources, history, activeModelName, modelReady, en
 
   return (
     <section className="min-w-0 space-y-5">
-      <input ref={inputRef} type="file" multiple accept=".pdf,.xlsx,.xls,.csv,.txt" className="hidden" onChange={(event) => event.target.files && void addFiles(event.target.files)} />
+      <input ref={inputRef} type="file" multiple accept=".pdf,.docx,.xlsx,.xls,.csv,.txt" className="hidden" onChange={(event) => event.target.files && void addFiles(event.target.files)} />
 
       <div>
         <h1 className="text-2xl font-semibold">资料导入</h1>
@@ -116,14 +126,15 @@ export function ImportCenter({ sources, history, activeModelName, modelReady, en
         onDragOver={(event) => event.preventDefault()}
         onDragLeave={() => setDragging(false)}
         onDrop={(event) => { event.preventDefault(); setDragging(false); void addFiles(event.dataTransfer.files); }}
-        className={`rounded-2xl border-2 border-dashed px-5 py-6 transition ${dragging ? 'border-primary bg-accent' : 'border-input bg-card'}`}
+        className={`rounded-2xl border-2 border-dashed px-5 py-10 sm:py-12 transition ${dragging ? 'border-primary bg-accent' : 'border-input bg-card'}`}
       >
         <div className="flex flex-col items-center justify-between gap-4 text-center sm:flex-row sm:text-left">
           <div className="flex flex-col items-center gap-3 sm:flex-row">
             <span className="grid size-12 shrink-0 place-items-center rounded-2xl bg-accent text-primary"><UploadCloud className="size-6" /></span>
             <div>
               <p className="font-sans text-xl font-semibold">{sources.length ? `已添加 ${sources.length} 个文件` : '拖入资料文件'}</p>
-              <p className="mt-1 text-sm text-muted-foreground">{sources.length ? `共 ${selectedRows} 条资料待处理，还可以继续添加` : '支持 PDF、Excel、CSV、TXT，可一次选择多个文件'}</p>
+              <p className="mt-1 text-sm text-muted-foreground">{sources.length ? `共 ${selectedRows} 条资料待处理，还可以继续添加` : '支持 PDF、Word（.docx）、Excel、CSV、TXT，可一次选择多个文件'}</p>
+              <p className="mt-2 text-xs text-muted-foreground">单个文件最大 {MAX_IMPORT_FILE_SIZE_MB} MB</p>
             </div>
           </div>
           <Button type="button" variant="outline" className="shrink-0 border-border bg-card" onClick={() => inputRef.current?.click()} disabled={busy}>
@@ -135,7 +146,7 @@ export function ImportCenter({ sources, history, activeModelName, modelReady, en
         {sources.length > 0 && (
           <div className="mt-4 divide-y divide-border border-t border-border">
             {sources.map((source) => {
-              const hasWarning = Boolean(source.error || source.requiresOcr);
+              const hasWarning = Boolean(source.error || source.requiresOcr || source.warnings?.length);
               return (
                 <div key={source.id} className="py-3 text-left">
                   <div className="flex items-start gap-3">
@@ -170,7 +181,7 @@ export function ImportCenter({ sources, history, activeModelName, modelReady, en
           </DropdownMenu>
         </div>
       </div>
-      <details className="text-xs leading-5 text-muted-foreground"><summary className="cursor-pointer">处理说明</summary><p className="mt-2">默认追加生成，已有相同问题会去重。文本型 PDF 自动解析，扫描页提示 OCR 并跳过。生成前跳过可识别的文件编制信息和未确认方案；已有 QA 直接迁移。</p></details>
+      <details className="text-xs leading-5 text-muted-foreground"><summary className="cursor-pointer">处理说明</summary><p className="mt-2">默认追加生成，已有相同问题会去重。文本型 PDF 自动解析，扫描页提示 OCR 并跳过。Word 支持 .docx（单个文件最多 20 MB），提取正文和表格文字，图片不做 OCR；旧版 .doc 请先另存为 .docx。生成前跳过可识别的文件编制信息和未确认方案；已有 QA 直接迁移。</p></details>
       {(generationStatus || runInProgress || !modelReady) && <div className={`rounded-xl border px-4 py-3 text-sm ${!modelReady ? 'border-[#d9b09f] bg-[#fff1ed] text-[#8c4d3f]' : 'border-info-border bg-info text-info-foreground'}`}>{!modelReady ? `QA 生成：${configurationIssue}。请到模型配置页完善。` : runInProgress && !generationStatus ? `后台生成进行中：${runLabel}。已完成的批次已实时入库，可到“QA 生产与审核”页先审核，不要刷新页面。` : generationStatus}</div>}
 
       {history.length > 0 && (

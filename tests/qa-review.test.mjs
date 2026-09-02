@@ -89,11 +89,11 @@ test('previous detailed results remain usable after switching to the brief outpu
   assert.equal(needsMachineReview(reviewed), false);
 });
 
-test('review runs six simultaneous requests and uses a smaller output budget', async (context) => {
+test('review runs six simultaneous requests with a 6000-token budget and brief output instructions', async (context) => {
   let active = 0; let peak = 0; let requests = 0;
   context.mock.method(globalThis, 'fetch', async (_url, init) => {
     const request = JSON.parse(init.body);
-    assert.equal(request.maxOutputTokens, 1200);
+    assert.equal(request.maxOutputTokens, 6000);
     assert.doesNotMatch(request.messages[0].content, /checks必须|完整建议答案/);
     requests++; active++; peak = Math.max(peak, active);
     await new Promise(resolve => setTimeout(resolve, 10));

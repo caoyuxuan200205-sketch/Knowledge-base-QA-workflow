@@ -5,7 +5,6 @@ import { FileText, LoaderCircle, Trash2, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { needsMachineReview } from '@/lib/qa-review';
-import { MACHINE_REVIEW_CONCURRENCY } from '@/lib/qa-review-service';
 import { createReviewMaterialIndex, type ReviewDocument } from '@/lib/review-materials';
 import { readReviewDocument } from '@/lib/review-material-reader';
 import { loadReviewDocuments, saveReviewDocuments } from '@/lib/review-material-storage';
@@ -68,7 +67,6 @@ export function ReviewSetupDialog({ open, onOpenChange, items, busy, modelName, 
 
   const index = useMemo(() => createReviewMaterialIndex(documents), [documents]);
   const targets = useMemo(() => !open ? [] : items.filter(item => item.status === '待审核').map(item => index.match(item)).filter(needsMachineReview), [open, items, index]);
-  const missingEvidence = targets.filter(item => !item.evidence?.some(entry => entry.kind === 'material' && entry.text.trim())).length;
   const selectedDocuments = index.documents.length;
   const failedWithoutMaterials = documents.some(document => document.error) && !selectedDocuments;
   const canStart = ready && !busy && !loadingFile && !failedWithoutMaterials && modelReady && targets.length > 0;
@@ -101,15 +99,9 @@ export function ReviewSetupDialog({ open, onOpenChange, items, busy, modelName, 
             {!!document.passages.length && <details className="mt-2 text-xs text-muted-foreground"><summary className="cursor-pointer">查看原文预览</summary>{document.passages.slice(0, 2).map(passage => <div key={passage.id} className="mt-2"><p className="font-medium">{passage.source}</p><p className="mt-1 max-h-24 overflow-y-auto whitespace-pre-wrap leading-5">{passage.text}</p></div>)}</details>}
           </div>)}
         </div>}
-        <p className="text-xs leading-5 text-muted-foreground">已选 {selectedDocuments} 个文件。{selectedDocuments ? '本次以选中文件重新匹配依据，相关片段随 QA 保存。' : '不选择新文件时，沿用 QA 已有关联依据。'} 扫描页需先 OCR；Word 和 TXT 按段落定位。</p>
-        <p className="text-xs leading-5 text-muted-foreground">文件文字保存在当前浏览器；确认审核后，仅将相关片段发送给所选模型。移除文件不删除历史 QA 中已保存的片段。</p>
       </div>
       {storageError && <p role="alert" className="text-xs text-amber-700">{storageError}</p>}
       {failedWithoutMaterials && <p role="alert" className="text-xs text-destructive">上传的文件未能提供可用原文，请重新上传或移除失败文件后继续。</p>}
-      <div className="rounded-xl border border-info-border bg-info p-3 text-sm text-info-foreground">
-        <p>本次 {targets.length} 条 · 使用 {modelName} · 同时审核 {MACHINE_REVIEW_CONCURRENCY} 条</p>
-        <p className="mt-1 text-xs leading-5">{missingEvidence ? `${missingEvidence} 条未找到独立原文，将标记依据不足，模型仅检查问答与表达。` : '将依据匹配的原文返回简短结论，发现问题时附原文引用。'} 审核会产生 API 用量。</p>
-      </div>
       {!!targets.length && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer">查看依据匹配预览（前 {Math.min(3, targets.length)} 条）</summary>
         {targets.slice(0, 3).map(item => <div key={item.id} className="mt-2 rounded-lg border border-border p-3"><p className="font-medium text-foreground">{item.question}</p><p className="mt-1 leading-5">{item.evidence?.filter(entry => entry.kind === 'material').map(entry => entry.source).filter((value, position, all) => all.indexOf(value) === position).join('；') || '未找到相关原文'}</p></div>)}
       </details>}

@@ -45,6 +45,18 @@ export const defaultModels: ModelConfig[] = [
     enabled: true,
     capabilities: { toolCall: true, images: false, reasoning: true, structuredOutput: true },
   },
+  {
+    id: 'linghub-company-model',
+    name: '数字文博灵枢',
+    modelId: 'deepseek-v4-flash',
+    provider: '公司模型平台',
+    baseUrl: 'https://linghub.shuziwenbo.cn/v1/chat/completions',
+    protocol: 'openai-chat-completions',
+    maxInputTokens: 128000,
+    maxOutputTokens: 16000,
+    enabled: false,
+    capabilities: { toolCall: false, images: false, reasoning: false, structuredOutput: false },
+  },
 ];
 
 export function createCustomModel(): ModelConfig {

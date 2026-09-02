@@ -1,4 +1,5 @@
 import { callModel } from '@/lib/llm-adapter';
+import { checkGenerationStopped, runGenerationJobs } from '@/lib/generation-control';
 import type { ModelConfig } from '@/lib/model-registry';
 import type { QaItem } from '@/lib/museum-workflow';
 import {
@@ -59,7 +60,9 @@ export async function generateEvaluationWithModel(
   onProgress?: (completed: number, total: number, label: string) => void,
   onBatch?: (batchItems: EvaluationItem[]) => void,
   shouldAbort?: () => boolean,
+  signal?: AbortSignal,
 ): Promise<EvaluationItem[]> {
+  checkGenerationStopped(signal, shouldAbort);
   if (!apiKey) throw new Error('当前模型还没有填写 API Key');
   if (!dimensions.length) throw new Error('请至少选择一个评测维度');
 
@@ -69,7 +72,7 @@ export async function generateEvaluationWithModel(
   if (dimensions.includes('标准问答')) {
     qaItems.forEach((qa) => output.push(itemFor(qa, '标准问答')));
   }
-  onBatch?.(output);
+  onBatch?.([...output]);
 
   const modelDimensions: EvaluationDimension[] = dimensions.filter((dimension) => dimension !== '标准问答');
   const jobs = modelDimensions.length
@@ -79,7 +82,7 @@ export async function generateEvaluationWithModel(
   let completed = 0;
   onProgress?.(0, total, total ? '准备调用模型' : '正在生成基准题');
 
-  async function runJob(job: { batch: QaItem[]; dimensions: EvaluationDimension[] }) {
+  async function runJob(job: { batch: QaItem[]; dimensions: EvaluationDimension[] }, requestSignal: AbortSignal) {
     const content = await callModel(model, apiKey, [
       {
         role: 'system',
@@ -89,7 +92,8 @@ export async function generateEvaluationWithModel(
         role: 'user',
         content: `评测维度及要求：\n${job.dimensions.map((dimension) => `- ${dimension}（难度：${difficultyByDimension[dimension]}）：${dimensionGuide[dimension]}`).join('\n')}\n\n来源QA：\n${JSON.stringify(job.batch.map((qa) => ({ id: qa.id, question: qa.question, answer: qa.answer, category: qa.category })))}`,
       },
-    ], { temperature: 0.3, maxOutputTokens: Math.min(12000, model.maxOutputTokens), structuredOutput: true });
+    ], { temperature: 0.3, maxOutputTokens: Math.min(12000, model.maxOutputTokens), structuredOutput: true, signal: requestSignal });
+    checkGenerationStopped(requestSignal, shouldAbort);
 
     const parsed = parseJsonObject(content);
     const qaById = new Map(job.batch.map((qa) => [qa.id, qa]));
@@ -134,17 +138,7 @@ export async function generateEvaluationWithModel(
     onBatch?.(batchOutput);
   }
 
-  const queue = jobs.slice();
-  const workerCount = Math.min(CONCURRENCY, total);
-  async function worker() {
-    while (queue.length) {
-      if (shouldAbort?.()) break;
-      const job = queue.shift();
-      if (!job) break;
-      await runJob(job);
-    }
-  }
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  await runGenerationJobs(jobs, CONCURRENCY, runJob, signal, shouldAbort);
 
   const seen = new Set<string>();
   return output.filter((item) => {

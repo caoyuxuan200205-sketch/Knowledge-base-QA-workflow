@@ -13,8 +13,13 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: '知识库生产与评测工作台',
+  title: '知识库生产评测工作台',
   description: '将博物馆资料整理为可审核、可导出的问答知识库',
+  icons: {
+    icon: '/logo.png',
+    shortcut: '/logo.png',
+    apple: '/logo.png',
+  },
 };
 
 export default function RootLayout({

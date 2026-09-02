@@ -6,6 +6,7 @@ export interface ChatMessage {
 }
 
 export interface ModelCallOptions {
+  signal?: AbortSignal;
   temperature?: number;
   maxOutputTokens?: number;
   structuredOutput?: boolean;
@@ -15,6 +16,25 @@ export interface ModelCallOptions {
 export interface OpenAICompatibleRequest {
   url: string;
   init: RequestInit;
+}
+
+export class ModelHttpError extends Error {
+  readonly status: number;
+  readonly retryAfterMs?: number;
+
+  constructor(message: string, status: number, retryAfterMs?: number) {
+    super(message);
+    this.name = 'ModelHttpError';
+    this.status = status;
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+function retryAfterMilliseconds(value: string | null) {
+  if (!value?.trim()) return undefined;
+  const seconds = Number(value);
+  const milliseconds = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(value) - Date.now();
+  return Number.isFinite(milliseconds) ? Math.max(0, milliseconds) : undefined;
 }
 
 /**
@@ -33,6 +53,7 @@ export function buildModelRequest(
   return {
     url: model.baseUrl,
     init: {
+      signal: options.signal,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -97,7 +118,9 @@ export async function callModel(
   messages: ChatMessage[],
   options: ModelCallOptions = {},
 ) {
+  options.signal?.throwIfAborted();
   const response = await fetch('/api/llm', {
+    signal: options.signal,
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -111,9 +134,11 @@ export async function callModel(
     }),
   });
   const payload = await response.json() as unknown;
+  options.signal?.throwIfAborted();
   if (!response.ok) {
-    const message = payload && typeof payload === 'object' && 'error' in payload ? String((payload as { error: unknown }).error) : `请求失败（${response.status}）`;
-    throw new Error(message);
+    const detail = payload && typeof payload === 'object' && 'error' in payload ? (payload as { error: unknown }).error : undefined;
+    const message = typeof detail === 'string' ? detail : detail && typeof detail === 'object' && 'message' in detail && typeof detail.message === 'string' ? detail.message : `请求失败（${response.status}）`;
+    throw new ModelHttpError(message, response.status, retryAfterMilliseconds(response.headers?.get('retry-after') ?? null));
   }
   return readModelResponse(payload, { allowReasoningFallback: options.allowReasoningFallback });
 }

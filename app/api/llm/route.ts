@@ -43,6 +43,7 @@ export async function POST(request: Request) {
   }
 
   try {
+    request.signal.throwIfAborted();
     const upstream = await fetch(endpoint, {
       method: 'POST',
       headers: {
@@ -56,7 +57,7 @@ export async function POST(request: Request) {
         max_tokens: typeof input.maxOutputTokens === 'number' ? input.maxOutputTokens : 8000,
         ...(input.structuredOutput ? { response_format: { type: 'json_object' } } : {}),
       }),
-      signal: AbortSignal.timeout(120000),
+      signal: AbortSignal.any([request.signal, AbortSignal.timeout(120000)]),
     });
 
     const text = await upstream.text();
@@ -66,8 +67,10 @@ export async function POST(request: Request) {
     } catch {
       payload = { error: upstream.ok ? '模型返回了无法解析的内容' : `模型服务请求失败（${upstream.status}）` };
     }
-    return Response.json(payload, { status: upstream.status });
+    const retryAfter = upstream.headers.get('retry-after');
+    return Response.json(payload, { status: upstream.status, ...(retryAfter ? { headers: { 'Retry-After': retryAfter } } : {}) });
   } catch (error) {
+    if (request.signal.aborted) return Response.json({ error: '请求已取消' }, { status: 499 });
     const message = error instanceof Error && error.name === 'TimeoutError' ? '模型请求超时' : '无法连接模型服务';
     return Response.json({ error: message }, { status: 502 });
   }

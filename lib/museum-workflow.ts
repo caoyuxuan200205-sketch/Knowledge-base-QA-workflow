@@ -1,4 +1,7 @@
 import * as XLSX from 'xlsx';
+import { cleanVisitorText, prepareVisitorRow } from '@/lib/qa-source-policy';
+import { createQaEvidence, rawRowText } from '@/lib/qa-evidence';
+import type { QaEvidence, MachineReview, QaRevision } from '@/lib/qa-review-types';
 
 export const categories = ['文物信息', '展览内容', '馆务服务', '参观政策', '基建导览', '其他'] as const;
 export type KnowledgeCategory = (typeof categories)[number];
@@ -13,6 +16,12 @@ export interface QaItem {
   status: ReviewStatus;
   confidence: number;
   updatedAt: string;
+  evidence?: QaEvidence[];
+  evidenceNote?: string;
+  revision?: number;
+  machineReview?: MachineReview;
+  machineReviewHistory?: MachineReview[];
+  revisions?: QaRevision[];
 }
 
 export type DataRow = Record<string, unknown>;
@@ -110,7 +119,7 @@ function rowSummary(row: DataRow, skippedKeys: string[] = []) {
     .join('；');
 }
 
-function makeItem(question: string, answer: string, source: string): QaItem {
+function makeItem(question: string, answer: string, source: string, evidence?: QaEvidence[]): QaItem {
   const category = classifyKnowledge(`${question} ${answer}`);
   return {
     id: createId(),
@@ -118,6 +127,7 @@ function makeItem(question: string, answer: string, source: string): QaItem {
     answer: normalize(answer),
     category,
     source,
+    evidence,
     status: '待审核',
     confidence: category === '其他' ? 0.72 : 0.9,
     updatedAt: new Date().toISOString(),
@@ -127,15 +137,20 @@ function makeItem(question: string, answer: string, source: string): QaItem {
 function rowsToQa(rows: DataRow[], sourceName: string, mapping?: ColumnMapping) {
   const output: QaItem[] = [];
 
-  rows.forEach((row, index) => {
+  rows.forEach((originalRow, index) => {
+    let row = originalRow;
     const questionKey = mapping?.question || findKey(row, questionHeaders);
     const answerKey = mapping?.answer || findKey(row, answerHeaders);
     const source = `${sourceName} · 第 ${index + 2} 行`;
 
     if (questionKey && answerKey && normalize(row[questionKey]) && normalize(row[answerKey])) {
-      output.push(makeItem(normalize(row[questionKey]), normalize(row[answerKey]), source));
+      output.push(makeItem(normalize(row[questionKey]), normalize(row[answerKey]), source, [createQaEvidence(source, rawRowText(originalRow), 'provided-qa')]));
       return;
     }
+
+    const prepared = prepareVisitorRow(originalRow);
+    if (!prepared) return;
+    row = prepared;
 
     const nameKey = mapping?.name || findKey(row, nameHeaders);
     const firstValueKey = Object.keys(row).find((key) => normalize(row[key]));
@@ -147,16 +162,17 @@ function rowsToQa(rows: DataRow[], sourceName: string, mapping?: ColumnMapping) 
     if (!name || !answer) return;
 
     const category = classifyKnowledge(`${name} ${answer}`);
-    output.push(makeItem(inferQuestion(name, category), answer, source));
+    const evidence = [createQaEvidence(source, rawRowText(originalRow))];
+    output.push(makeItem(inferQuestion(name, category), answer, source, evidence));
 
     const featureFields = Object.keys(row).filter((key) => /材质|尺寸|工艺|纹饰|铭文|年代|出土/.test(key) && normalize(row[key]));
     if (featureFields.length) {
-      output.push(makeItem(`${name}有哪些基本特征？`, rowSummary(row, Object.keys(row).filter((key) => !featureFields.includes(key))), source));
+      output.push(makeItem(`${name}有哪些基本特征？`, rowSummary(row, Object.keys(row).filter((key) => !featureFields.includes(key))), source, evidence));
     }
 
     const valueFields = Object.keys(row).filter((key) => /价值|意义|重要|特色|亮点/.test(key) && normalize(row[key]));
     if (valueFields.length) {
-      output.push(makeItem(`${name}为什么重要？`, rowSummary(row, Object.keys(row).filter((key) => !valueFields.includes(key))), source));
+      output.push(makeItem(`${name}为什么重要？`, rowSummary(row, Object.keys(row).filter((key) => !valueFields.includes(key))), source, evidence));
     }
   });
 
@@ -166,14 +182,15 @@ function rowsToQa(rows: DataRow[], sourceName: string, mapping?: ColumnMapping) 
 function textToQa(text: string, sourceName: string) {
   const paragraphs = text
     .split(/\n\s*\n/)
-    .map((paragraph) => normalize(paragraph))
-    .filter((paragraph) => paragraph.length >= 20);
+    .map((paragraph, index) => ({ paragraph: normalize(cleanVisitorText(paragraph)), originalParagraph: paragraph, index }))
+    .filter(({ paragraph }) => paragraph.length >= 20);
 
   return deduplicate(
-    paragraphs.map((paragraph, index) => {
+    paragraphs.map(({ paragraph, originalParagraph, index }) => {
       const firstSentence = paragraph.split(/[。！？!?]/)[0].slice(0, 24).replace(/[：:，,].*$/, '');
       const category = classifyKnowledge(paragraph);
-      return makeItem(inferQuestion(firstSentence || `资料第${index + 1}段`, category), paragraph, `${sourceName} · 第 ${index + 1} 段`);
+      const source = `${sourceName} · 第 ${index + 1} 段`;
+      return makeItem(inferQuestion(firstSentence || `资料第${index + 1}段`, category), paragraph, source, [createQaEvidence(source, originalParagraph)]);
     }),
   );
 }

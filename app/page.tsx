@@ -6,20 +6,14 @@ import {
   ArchiveRestore,
   Check,
   CheckCircle2,
-  ChevronRight,
   CircleAlert,
   Download,
-  FileJson,
   FileSpreadsheet,
-  Filter,
-  LibraryBig,
   LoaderCircle,
   Settings2,
-  Plus,
   Search,
   Sparkles,
   Trash2,
-  Upload,
 } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
@@ -27,14 +21,20 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select';
-import { Progress, ProgressLabel } from '@/components/ui/progress';
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu';
 import { Textarea } from '@/components/ui/textarea';
+import { ReviewSetupDialog } from '@/app/components/ReviewSetupDialog';
+import { MachineReviewPanel } from '@/app/components/MachineReviewPanel';
+import { QaImportDialog } from '@/app/components/QaImportDialog';
+import { machineReviewStatus, machineReviewStatuses, applyReviewEvent, recoverMachineReview, adoptReviewSuggestion, updateQaContent, type MachineReviewStatus } from '@/lib/qa-review';
+import { reviewQaItems } from '@/lib/qa-review-service';
 import { ImportCenter, type ImportHistoryItem } from '@/app/components/ImportCenter';
 import { EvaluationCenter } from '@/app/components/EvaluationCenter';
 import { ModelSettings } from '@/app/components/ModelSettings';
 import type { EvaluationDimension, EvaluationItem } from '@/lib/evaluation-workflow';
 import { defaultModels, type ModelConfig } from '@/lib/model-registry';
 import { readModelSecret } from '@/lib/model-secrets';
+import { restoreModelAssignments, resolveModelAssignment, type ModelAssignments } from '@/lib/model-assignments';
 import { generateEvaluationWithModel } from '@/lib/evaluation-model-service';
 import { generateQaWithModel } from '@/lib/qa-model-service';
 import {
@@ -67,10 +67,6 @@ const statusTone: Record<ReviewStatus, string> = {
   需修改: 'border-[#d7a79a] bg-[#fff0ec] text-[#914f3f]',
 };
 
-function todayLabel() {
-  return new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' }).format(new Date());
-}
-
 function mergeInto(current: QaItem[], incoming: QaItem[]) {
   const keys = new Set(current.map((item) => item.question.replace(/[？?\s]/g, '').toLowerCase()));
   const additions = incoming.filter((item) => {
@@ -82,6 +78,16 @@ function mergeInto(current: QaItem[], incoming: QaItem[]) {
   return additions.length ? [...current, ...additions] : current;
 }
 
+function includeNewDefaultModels(savedModels: ModelConfig[]) {
+  const refreshed = savedModels.map((model) => {
+    if (model.id !== 'linghub-company-model' || model.modelId.trim()) return model;
+    const preset = defaultModels.find((candidate) => candidate.id === model.id);
+    return preset ? { ...model, modelId: preset.modelId } : model;
+  });
+  const savedIds = new Set(refreshed.map((model) => model.id));
+  return [...refreshed, ...defaultModels.filter((model) => !savedIds.has(model.id))];
+}
+
 export default function Home() {
   const [activeView, setActiveView] = useState<'import' | 'review' | 'evaluation' | 'models'>('import');
   const [museumName, setMuseumName] = useState('湖南博物院');
@@ -90,33 +96,38 @@ export default function Home() {
   const [history, setHistory] = useState<ImportHistoryItem[]>([]);
   const [evaluationItems, setEvaluationItems] = useState<EvaluationItem[]>([]);
   const [models, setModels] = useState<ModelConfig[]>(defaultModels);
-  const [activeModelId, setActiveModelId] = useState(defaultModels[0].id);
+  const [modelAssignments, setModelAssignments] = useState<ModelAssignments>(() => restoreModelAssignments(undefined, defaultModels[0].id));
+  const [, refreshModelKeys] = useState(0);
   const [selectedId, setSelectedId] = useState(demoQa[0]?.id ?? '');
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<'全部' | KnowledgeCategory>('全部');
   const [statusFilter, setStatusFilter] = useState<'全部' | ReviewStatus>('全部');
   const [notice, setNotice] = useState('已载入示例数据，可以直接编辑或导入馆方资料。');
+  const [storageError, setStorageError] = useState('');
+  const [machineFilter, setMachineFilter] = useState<'全部' | MachineReviewStatus>('全部');
+  const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
   const [hydrated, setHydrated] = useState(false);
-  const [generationRun, setGenerationRun] = useState<{ completed: number; total: number; label: string } | null>(null);
+  const [generationRun, setGenerationRun] = useState<{ completed: number; total: number; label: string; kind?: 'review' } | null>(null);
   const runActiveRef = useRef(false);
-  const stopRef = useRef(false);
+  const generationController = useRef<AbortController | null>(null);
+  const [stopping, setStopping] = useState(false);
 
   useEffect(() => {
     queueMicrotask(() => {
       try {
         const saved = localStorage.getItem(STORAGE_KEY);
         if (saved) {
-          const data = JSON.parse(saved) as { museumName?: string; items?: QaItem[]; history?: ImportHistoryItem[]; evaluationItems?: EvaluationItem[]; models?: ModelConfig[]; activeModelId?: string };
+          const data = JSON.parse(saved) as { museumName?: string; items?: QaItem[]; history?: ImportHistoryItem[]; evaluationItems?: EvaluationItem[]; models?: ModelConfig[]; activeModelId?: string; modelAssignments?: unknown };
           if (data.museumName) setMuseumName(data.museumName);
-          if (data.items?.length) {
-            setItems(data.items);
-            setSelectedId(data.items[0].id);
+          if (Array.isArray(data.items)) {
+            setItems(data.items.map(recoverMachineReview));
+            setSelectedId(data.items[0]?.id ?? '');
             setNotice(`已恢复本地工作区，共 ${data.items.length} 条 QA。`);
           }
           if (data.history) setHistory(data.history);
           if (data.evaluationItems) setEvaluationItems(data.evaluationItems);
-          if (data.models?.length) setModels(data.models);
-          if (data.activeModelId) setActiveModelId(data.activeModelId);
+          if (data.models?.length) setModels(data.modelAssignments ? data.models : includeNewDefaultModels(data.models));
+          setModelAssignments(restoreModelAssignments(data.modelAssignments, data.activeModelId ?? defaultModels[0].id));
         }
       } catch {
         setNotice('本地历史数据读取失败，已载入示例数据。');
@@ -128,15 +139,14 @@ export default function Home() {
 
   useEffect(() => {
     if (!hydrated) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ museumName, items, history, evaluationItems, models, activeModelId }));
-  }, [activeModelId, evaluationItems, history, hydrated, items, models, museumName]);
-
-  const stats = useMemo(() => {
-    const approved = items.filter((item) => item.status === '已通过').length;
-    const needsWork = items.filter((item) => item.status === '需修改').length;
-    const categoriesCount = new Set(items.map((item) => item.category)).size;
-    return { approved, needsWork, categoriesCount, progress: items.length ? Math.round((approved / items.length) * 100) : 0 };
-  }, [items]);
+    let error = '';
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ museumName, items, history, evaluationItems, models, modelAssignments }));
+    } catch {
+      error = '本机保存失败（空间不足或存储不可用）。请先导出 JSON 备份，暂勿刷新或关闭页面。';
+    }
+    queueMicrotask(() => setStorageError(error));
+  }, [modelAssignments, evaluationItems, history, hydrated, items, models, museumName]);
 
   const filteredItems = useMemo(() => {
     const keyword = search.trim().toLowerCase();
@@ -144,34 +154,80 @@ export default function Home() {
       const matchesSearch = !keyword || `${item.question} ${item.answer} ${item.source}`.toLowerCase().includes(keyword);
       const matchesCategory = categoryFilter === '全部' || item.category === categoryFilter;
       const matchesStatus = statusFilter === '全部' || item.status === statusFilter;
-      return matchesSearch && matchesCategory && matchesStatus;
+      return matchesSearch && matchesCategory && matchesStatus && (machineFilter === '全部' || machineReviewStatus(item) === machineFilter);
     });
-  }, [categoryFilter, items, search, statusFilter]);
+  }, [categoryFilter, items, search, statusFilter, machineFilter]);
 
-  const selected = items.find((item) => item.id === selectedId) ?? filteredItems[0];
-  const activeModel = models.find((model) => model.id === activeModelId) ?? models.find((model) => model.enabled) ?? models[0];
-  const activeModelKey = hydrated && activeModel ? readModelSecret(activeModel.id) : '';
+  const selected = filteredItems.find((item) => item.id === selectedId) ?? filteredItems[0];
+  const qaAssignment = resolveModelAssignment(modelAssignments.qaGeneration, models, (id) => hydrated ? readModelSecret(id) : '');
+  const evaluationAssignment = resolveModelAssignment(modelAssignments.evaluationGeneration, models, (id) => hydrated ? readModelSecret(id) : '');
+  const reviewAssignment = resolveModelAssignment(modelAssignments.qaReview, models, (id) => hydrated ? readModelSecret(id) : '');
 
-  async function handleImport(importSources: ParsedSourceFile[], mode: 'append' | 'replace', engine: 'rules' | 'model', onProgress: (completed: number, total: number, label: string) => void) {
+  async function startMachineReview(targets: QaItem[]) {
+    if (runActiveRef.current) { setNotice('已有任务进行中，请先完成或停止当前任务。'); return; }
+    if (!reviewAssignment.ready || !reviewAssignment.model) { setNotice(`请配置 QA 审核模型：${reviewAssignment.issue || '未选择模型'}`); return; }
+    if (!targets.length) { setNotice('当前没有需要机审的待审核 QA；已完成的条目可在详情中重审。'); return; }
+    runActiveRef.current = true;
+    const controller = new AbortController();
+    generationController.current = controller;
+    setReviewDialogOpen(false);
+    setStopping(false);
+    setGenerationRun({ kind: 'review', completed: 0, total: targets.length, label: '正在机审' });
+    // Attach selected materials before running events so their input keys match.
+    const targetById = new Map(targets.map(item => [item.id, item]));
+    setItems(current => current.map(item => {
+      const target = targetById.get(item.id);
+      return target ? { ...item, evidence: target.evidence, evidenceNote: target.evidenceNote } : item;
+    }));
+    let completed = 0;
+    try {
+      const result = await reviewQaItems(targets, reviewAssignment.model, reviewAssignment.apiKey, (id, review) => {
+        if (controller.signal.aborted && review.status !== 'stopped') return;
+        setItems((current) => current.map((item) => item.id === id ? applyReviewEvent(item, review) : item));
+      }, (count, total) => {
+        completed = count;
+        if (!controller.signal.aborted) setGenerationRun({ kind: 'review', completed: count, total, label: '正在机审' });
+      }, controller.signal);
+      setNotice(`机审结束：完成 ${result.completed - result.failed} 条，失败 ${result.failed} 条。内容发生变化的条目需重审，人工审核状态未改变。`);
+    } catch (error) {
+      setNotice(controller.signal.aborted ? `已停止机审，保留已处理的 ${completed} 条记录；未完成条目可重新机审。` : `机审中断：${error instanceof Error ? error.message : '请求失败'}`);
+    } finally {
+      runActiveRef.current = false;
+      generationController.current = null;
+      setGenerationRun(null);
+      setStopping(false);
+    }
+  }
+
+  function adoptSuggestion(id: string) {
+    if (runActiveRef.current || !window.confirm('采用机审建议？原问题和答案会留存，采用后回到待审核，并需要重新机审。')) return;
+    setItems((current) => current.map((item) => item.id === id ? adoptReviewSuggestion(item) : item));
+  }
+
+  async function handleImport(importSources: ParsedSourceFile[], mode: 'append' | 'replace', onProgress: (completed: number, total: number, label: string) => void) {
     if (runActiveRef.current) throw new Error('已有生成任务正在进行中，请等待完成后再导入。');
-    if (engine === 'model' && !activeModel) throw new Error('请先选择一个可用模型');
+    if (!qaAssignment.ready) throw new Error(`请到模型配置页设置 QA 生成：${qaAssignment.issue}`);
 
-    if (engine === 'model' && activeModel) {
+    if (qaAssignment.engine === 'model' && qaAssignment.model) {
       runActiveRef.current = true;
-      stopRef.current = false;
+      const controller = new AbortController();
+      generationController.current = controller;
+      setStopping(false);
       setGenerationRun({ completed: 0, total: 0, label: '准备调用模型' });
       let generatedCount = 0;
       let replaced = false;
       try {
         await generateQaWithModel(
           importSources,
-          activeModel,
-          activeModelKey,
+          qaAssignment.model,
+          qaAssignment.apiKey,
           (completed, total, label) => {
+            if (controller.signal.aborted) return;
             setGenerationRun({ completed, total, label });
             onProgress(completed, total, label);
           },
           (batchItems) => {
+            if (controller.signal.aborted) return;
             if (!batchItems.length) return;
             generatedCount += batchItems.length;
             if (mode === 'replace' && !replaced) {
@@ -181,14 +237,20 @@ export default function Home() {
               setItems((current) => mergeInto(current, batchItems));
             }
           },
-          () => stopRef.current,
+          () => controller.signal.aborted,
+          controller.signal,
         );
+      } catch (error) {
+        const message = controller.signal.aborted
+          ? `已停止生成，保留本次已生成的 ${generatedCount} 条候选 QA。可选择“追加到现有知识库”重新生成，已有相同问题会去重。`
+          : `生成中断：${error instanceof Error ? error.message : '请求失败'}。保留本次已生成的 ${generatedCount} 条候选 QA。`;
+        setNotice(message);
+        throw new Error(message);
       } finally {
         runActiveRef.current = false;
+        generationController.current = null;
+        setStopping(false);
         setGenerationRun(null);
-      }
-      if (stopRef.current) {
-        throw new Error(`已停止生成：已入库 ${generatedCount} 条候选 QA。重新导入可继续（已入库的会自动去重）。`);
       }
       if (!generatedCount) {
         setNotice('没有生成可用的 QA，请检查所选工作表和字段映射。');
@@ -229,10 +291,12 @@ export default function Home() {
     onProgress: (completed: number, total: number, label: string) => void,
   ): Promise<number> {
     if (runActiveRef.current) throw new Error('已有生成任务正在进行中，请等待完成。');
-    if (!activeModel) throw new Error('请先选择一个可用模型');
+    if (!evaluationAssignment.ready || !evaluationAssignment.model) throw new Error(`请到模型配置页设置测评集生成：${evaluationAssignment.issue || '请选择模型'}`);
 
     runActiveRef.current = true;
-    stopRef.current = false;
+    const controller = new AbortController();
+    generationController.current = controller;
+    setStopping(false);
     setGenerationRun({ completed: 0, total: 0, label: '准备生成评测集' });
     let count = 0;
     let replaced = false;
@@ -240,13 +304,15 @@ export default function Home() {
       await generateEvaluationWithModel(
         evaluationSources,
         dimensions,
-        activeModel,
-        activeModelKey,
+        evaluationAssignment.model,
+        evaluationAssignment.apiKey,
         (completed, total, label) => {
+          if (controller.signal.aborted) return;
           setGenerationRun({ completed, total, label });
           onProgress(completed, total, label);
         },
         (batchItems) => {
+          if (controller.signal.aborted) return;
           if (!batchItems.length) return;
           count += batchItems.length;
           if (mode === 'replace' && !replaced) {
@@ -265,25 +331,33 @@ export default function Home() {
             });
           }
         },
-        () => stopRef.current,
+        () => controller.signal.aborted,
+        controller.signal,
       );
+    } catch (error) {
+      const message = controller.signal.aborted
+        ? `已停止评测集生成，保留本次已生成的 ${count} 条评测题。`
+        : `评测集生成中断：${error instanceof Error ? error.message : '请求失败'}。保留本次已生成的 ${count} 条评测题。`;
+      setNotice(message);
+      throw new Error(message);
     } finally {
       runActiveRef.current = false;
+      generationController.current = null;
+      setStopping(false);
       setGenerationRun(null);
-    }
-    if (stopRef.current) {
-      throw new Error(`已停止评测集生成，已入库 ${count} 条评测题。`);
     }
     return count;
   }
 
   function stopGeneration() {
-    stopRef.current = true;
-    setNotice('正在停止，请等待当前批次完成…');
+    if (!generationController.current || generationController.current.signal.aborted) return;
+    setStopping(true);
+    generationController.current.abort();
+    setNotice('正在取消请求，已完成的结果会保留。已发出的请求是否继续计费，以模型服务商为准。');
   }
 
   function updateItem(id: string, patch: Partial<QaItem>) {
-    setItems((current) => current.map((item) => (item.id === id ? { ...item, ...patch, updatedAt: new Date().toISOString() } : item)));
+    setItems((current) => current.map((item) => item.id === id ? updateQaContent(item, patch) : item));
   }
 
   function reviewAndNext(status: '已通过' | '需修改') {
@@ -309,6 +383,15 @@ export default function Home() {
     setNotice('已删除 1 条 QA。');
   }
 
+  function importReadyQa(incoming: QaItem[]) {
+    if (!hydrated || runActiveRef.current) throw new Error('请先完成或停止当前任务，再导入 QA。');
+    if (!incoming.length || incoming.some(item => !item.question.trim() || !item.answer.trim())) throw new Error('问题和答案不能为空。');
+    setItems(current => [...current, ...incoming]);
+    setSelectedId(incoming[0].id);
+    setSearch(''); setCategoryFilter('全部'); setStatusFilter('全部'); setMachineFilter('全部');
+    setNotice(`已导入 ${incoming.length} 条 QA，全部设为待审核。`);
+  }
+
   function addBlankItem() {
     const item: QaItem = {
       id: crypto.randomUUID(),
@@ -325,12 +408,27 @@ export default function Home() {
   }
 
   function approveVisible() {
+    if (!window.confirm(`将当前筛选出的 ${filteredItems.length} 条 QA 全部标记为已通过？请确认已核对内容。`)) return;
     const visibleIds = new Set(filteredItems.map((item) => item.id));
     setItems((current) => current.map((item) => (visibleIds.has(item.id) ? { ...item, status: '已通过', updatedAt: new Date().toISOString() } : item)));
     setNotice(`已批量通过 ${visibleIds.size} 条当前筛选结果。`);
   }
 
+  function clearQaItems() {
+    if (!hydrated || !items.length || runActiveRef.current) return;
+    if (!window.confirm(`确认清空全部 ${items.length} 条 QA（包括筛选隐藏的条目）？此操作不可恢复。已生成的测评集和导入记录会保留。`)) return;
+    const clearedCount = items.length;
+    setItems([]);
+    setSelectedId('');
+    setSearch('');
+    setCategoryFilter('全部');
+    setStatusFilter('全部');
+    setMachineFilter('全部');
+    setNotice(`已清空全部 ${clearedCount} 条 QA。`);
+  }
+
   function resetWorkspace() {
+    if (!window.confirm('将清空当前 QA 和测评集并恢复示例数据，无法撤销。确定继续？')) return;
     localStorage.removeItem(STORAGE_KEY);
     setItems(demoQa);
     setEvaluationItems([]);
@@ -340,185 +438,128 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen bg-[#f4f1e9] text-[#19372e]">
-      <header className="sticky top-0 z-30 border-b border-[#d8d1c1] bg-[#faf8f2]/95 px-5 py-3 backdrop-blur-xl md:px-8">
-        <div className="mx-auto flex max-w-[1640px] items-center justify-between gap-4">
-          <div className="flex min-w-0 items-center gap-3">
-            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-[#1f5143] text-[#f2d887] shadow-sm">
-              <LibraryBig className="size-5" />
-            </span>
-            <div className="min-w-0">
-              <p className="truncate font-serif text-lg font-semibold tracking-wide">知识库生产与评测工作台</p>
-              <p className="hidden text-xs text-[#73847d] sm:block">资料导入 · QA 生产 · 评测集 · 一键导出</p>
+    <main className="min-h-screen bg-background text-foreground">
+      <header className="sticky top-0 z-30 min-h-16 border-b border-sidebar-border bg-sidebar/95 px-4 py-3 backdrop-blur-xl md:px-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <img src="/workbench-logo.png" alt="知识库生产评测工作台" className="size-8 shrink-0 object-contain" />
+            <span className="text-xl font-bold tracking-tight text-foreground">知识库生产评测工作台</span>
+            <label htmlFor="museum-name" className="sr-only">当前博物馆</label>
+            <Input id="museum-name" value={museumName} onChange={(event) => setMuseumName(event.target.value)} className="h-8 w-32 border-transparent bg-transparent text-sm sm:w-44 text-muted-foreground hover:text-foreground focus:text-foreground" />
+          </div>
+          {generationRun ? (
+            <div className="flex items-center gap-3 text-xs text-primary">
+              <span className="flex items-center gap-1.5" title={generationRun.label}><LoaderCircle className="size-3.5 animate-spin" />{generationRun.kind === 'review' ? '机审中' : '生成中'} {generationRun.completed}/{generationRun.total} {generationRun.kind === 'review' ? '条' : '批'}</span>
+              <Button variant="outline" size="sm" disabled={stopping} onClick={stopGeneration}>{stopping ? '正在停止…' : generationRun.kind === 'review' ? '停止机审' : '停止生成'}</Button>
             </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="hidden text-xs text-[#74847e] lg:inline">{todayLabel()} · 数据保存在本机</span>
-            {generationRun && (
-              <>
-                <span className="hidden items-center gap-1.5 rounded-lg bg-[#e9f1eb] px-2.5 py-1.5 text-xs font-medium text-[#1f5143] md:inline-flex" title={generationRun.label}>
-                  <LoaderCircle className="size-3.5 animate-spin" />
-                  生成任务 {generationRun.completed}/{generationRun.total} 批 · 已逐批入库
-                </span>
-                <Button variant="outline" className="h-8 border-[#d7a79a] bg-[#fff0ec] px-2.5 text-xs text-[#914f3f]" onClick={stopGeneration}>停止</Button>
-              </>
-            )}
-            <NativeSelect aria-label="快捷切换大模型" value={activeModel?.id ?? ''} onChange={(event) => setActiveModelId(event.target.value)} className="hidden w-48 xl:block">
-              {models.filter((model) => model.enabled).map((model) => <NativeSelectOption key={model.id} value={model.id}>{model.name}</NativeSelectOption>)}
-            </NativeSelect>
-            <Button variant="outline" size="icon-lg" aria-label="打开模型设置" className="border-[#cfc6b4] bg-[#fffdf8]" onClick={() => setActiveView('models')}><Settings2 /></Button>
-            <Button variant="outline" className="h-9 border-[#cfc6b4] bg-[#fffdf8]" onClick={() => setActiveView('import')}>
-              <Upload /> 导入资料
-            </Button>
-            <Button className="h-9 bg-[#1f5143] text-white hover:bg-[#173e34]" onClick={() => exportQaAsExcel(items, museumName)} disabled={!items.length}>
-              <Download /> 导出 Excel
-            </Button>
-          </div>
+          ) : <span className="text-xs text-muted-foreground">{storageError ? '本机保存异常' : '自动保存到本机'}</span>}
         </div>
       </header>
+      {storageError && <div role="alert" className="mx-auto flex max-w-[1640px] flex-wrap items-center gap-3 px-6 py-2 text-sm text-[#934f3f]">{storageError}<Button variant="outline" size="sm" onClick={() => exportQaAsJson(items, museumName)}>导出 QA 完整备份</Button></div>}
 
-      <div className="mx-auto grid max-w-[1640px] gap-5 px-5 py-5 md:px-8 xl:grid-cols-[248px_minmax(0,1fr)]">
-        <aside className="space-y-4">
-          <Card className="border-0 bg-[#e9e4d7] shadow-none ring-[#d6cebd]">
-            <CardContent className="space-y-5">
-              <div>
-                <label htmlFor="museum-name" className="text-[11px] font-semibold tracking-[0.16em] text-[#78877f]">当前博物馆</label>
-                <Input id="museum-name" value={museumName} onChange={(event) => setMuseumName(event.target.value)} className="mt-2 h-10 border-[#cfc6b4] bg-[#f8f5ed] font-serif text-base font-semibold" />
-              </div>
-              <nav aria-label="工作流步骤" className="space-y-1.5">
-                {([
-                  ['01', '资料导入', items.length > 3, 'import'],
-                  ['02', 'QA 生产与审核', stats.approved > 0, 'review'],
-                  ['03', '评测集生产', evaluationItems.length > 0, 'evaluation'],
-                ] as const).map(([number, label, done, target]) => {
-                  const isActive = activeView === target;
-                  return (
-                  <button type="button" onClick={() => setActiveView(target)} key={String(label)} className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm ${isActive ? 'bg-[#1f5143] text-white shadow-sm' : 'text-[#536962] hover:bg-[#f3efe6]'}`}>
-                    <span className={`grid size-7 place-items-center rounded-lg text-xs ${isActive ? 'bg-white/12' : 'bg-[#f8f5ed]'}`}>{done ? <Check className="size-3.5" /> : number}</span>
-                    <span className="font-medium">{label}</span>
-                    <ChevronRight className="ml-auto size-4 opacity-50" />
-                  </button>
-                  );
-                })}
-              </nav>
-              <div className="rounded-xl border border-[#d4cbb9] bg-[#f8f5ed] p-3">
-                <Progress value={stats.progress} className="gap-2">
-                  <ProgressLabel className="text-xs">审核进度</ProgressLabel>
-                  <span className="ml-auto text-xs tabular-nums text-[#728078]">{stats.progress}%</span>
-                </Progress>
-                <p className="mt-2 text-xs leading-5 text-[#728078]">已通过 {stats.approved} / {items.length} 条知识</p>
-              </div>
-              <button type="button" onClick={() => setActiveView('models')} className={`w-full rounded-xl border p-3 text-left transition ${activeView === 'models' ? 'border-[#6f9583] bg-[#1f5143] text-white' : 'border-[#d4cbb9] bg-[#f8f5ed] text-[#536962] hover:border-[#9eaa9f]'}`}>
-                <div className="flex items-center gap-2"><Settings2 className="size-4" /><span className="text-sm font-medium">模型管理</span><Badge className={`ml-auto border-0 ${activeView === 'models' ? 'bg-white/15 text-white' : 'bg-[#e3ece6] text-[#35634f]'}`}>{models.filter((model) => model.enabled).length}</Badge></div>
-                <p className={`mt-2 truncate text-xs ${activeView === 'models' ? 'text-white/70' : 'text-[#7c8983]'}`}>当前：{activeModel?.name ?? '未选择'}</p>
+      <div className="grid gap-5 px-4 py-5 md:px-6 lg:min-h-[calc(100dvh-64px)] lg:grid-cols-[248px_minmax(0,1fr)] lg:gap-8">
+        <aside className="relative isolate lg:before:pointer-events-none lg:before:absolute lg:before:-inset-y-5 lg:before:-left-6 lg:before:-right-4 lg:before:-z-10 lg:before:border-r lg:before:border-sidebar-border lg:before:bg-sidebar lg:before:content-['']">
+          <nav aria-label="工作流导航" className="flex gap-2 overflow-x-auto py-1 lg:sticky lg:top-20 lg:flex-col">
+            {([
+              ['import', '资料导入', FileSpreadsheet],
+              ['review', 'QA 审核', CheckCircle2],
+              ['evaluation', '测评集', Sparkles],
+              ['models', '模型配置', Settings2],
+            ] as const).map(([target, label, Icon]) => (
+              <button key={target} type="button" aria-current={activeView === target ? 'page' : undefined} onClick={() => setActiveView(target)} className={`group flex h-[60px] shrink-0 items-center gap-3 rounded-2xl border px-3 text-left text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sidebar-ring ${activeView === target ? 'border-sidebar-border bg-sidebar-accent text-sidebar-accent-foreground shadow-sm' : 'border-transparent text-sidebar-foreground hover:border-sidebar-border hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground'}`}>
+                <span className={`grid size-9 shrink-0 place-items-center rounded-xl border transition-colors ${activeView === target ? 'border-sidebar-primary bg-sidebar-primary text-sidebar-primary-foreground' : 'border-sidebar-border bg-card text-sidebar-foreground group-hover:text-primary'}`}><Icon className="size-[18px]" /></span>
+                {label}
               </button>
-            </CardContent>
-          </Card>
-
-          <Card className="border-0 bg-[#203f36] text-white shadow-none ring-0">
-            <CardContent>
-              <Sparkles className="size-5 text-[#e9ce7e]" />
-              <p className="mt-3 font-serif text-lg font-semibold">处理说明</p>
-              <p className="mt-2 text-xs leading-5 text-[#c1cec9]">已有“问题、答案”列时直接迁移；普通表格或文本会按文物、展览、服务、政策等类型生成候选QA。</p>
-            </CardContent>
-          </Card>
+            ))}
+          </nav>
         </aside>
 
         {activeView === 'import' ? (
-          <ImportCenter sources={sources} history={history} activeModelName={activeModel?.name ?? '未选择模型'} modelReady={Boolean(activeModelKey)} runInProgress={Boolean(generationRun)} runLabel={generationRun ? `${generationRun.completed}/${generationRun.total} 批 · ${generationRun.label}` : ''} onSourcesChange={setSources} onImport={handleImport} />
+          <ImportCenter sources={sources} history={history} engine={qaAssignment.engine} activeModelName={qaAssignment.name} modelReady={qaAssignment.ready} configurationIssue={qaAssignment.issue} onOpenModelSettings={() => setActiveView('models')} runInProgress={Boolean(generationRun)} stopping={stopping} onStop={stopGeneration} runLabel={generationRun ? `${generationRun.completed}/${generationRun.total} ${generationRun.kind === 'review' ? '条' : '批'} · ${generationRun.label}` : ''} onSourcesChange={setSources} onImport={handleImport} />
         ) : activeView === 'models' ? (
-          <ModelSettings models={models} activeModelId={activeModel?.id ?? ''} onModelsChange={setModels} onActiveModelChange={setActiveModelId} />
+          <ModelSettings models={models} assignments={modelAssignments} onModelsChange={setModels} onAssignmentsChange={setModelAssignments} onSecretsChange={() => refreshModelKeys((value) => value + 1)} runInProgress={Boolean(generationRun)} />
         ) : activeView === 'evaluation' ? (
-          <EvaluationCenter qaItems={items} items={evaluationItems} museumName={museumName} activeModelName={activeModel?.name ?? '未选择模型'} modelReady={Boolean(activeModelKey)} onItemsChange={setEvaluationItems} onGenerateWithModel={handleEvaluationGenerate} />
+          <EvaluationCenter qaItems={items} items={evaluationItems} museumName={museumName} engine={evaluationAssignment.engine} activeModelName={evaluationAssignment.name} modelReady={evaluationAssignment.ready} configurationIssue={evaluationAssignment.issue} onOpenModelSettings={() => setActiveView('models')} runInProgress={Boolean(generationRun)} stopping={stopping} onStop={stopGeneration} onItemsChange={setEvaluationItems} onGenerateWithModel={handleEvaluationGenerate} />
         ) : (
         <section className="min-w-0 space-y-4">
           <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-end">
             <div>
-              <p className="text-sm text-[#78877f]">知识生产 / QA 审核</p>
-              <h1 className="mt-1 font-serif text-3xl font-semibold">审核并完善知识库</h1>
+              <h1 className="text-2xl font-semibold">QA 审核</h1>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button variant="outline" className="border-[#cfc6b4] bg-[#fffdf8]" onClick={addBlankItem}><Plus /> 新增 QA</Button>
-              <Button variant="outline" className="border-[#cfc6b4] bg-[#fffdf8]" onClick={() => exportQaAsJson(items, museumName)} disabled={!items.length}><FileJson /> 导出 JSON</Button>
-              <Button className="bg-[#1f5143] text-white hover:bg-[#173e34]" onClick={approveVisible} disabled={!filteredItems.length}><CheckCircle2 /> 批量通过</Button>
+              <QaImportDialog disabled={!hydrated || Boolean(generationRun)} onImport={importReadyQa} />
+              <Button variant="outline" disabled={Boolean(generationRun)} onClick={() => setReviewDialogOpen(true)}>开始机审</Button>
+              <Button className="bg-primary text-primary-foreground hover:bg-primary-hover" onClick={() => exportQaAsExcel(items, museumName)} disabled={!items.length}><Download /> 导出 QA</Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger render={<Button variant="outline" />}>更多</DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-44">
+                  <DropdownMenuItem onClick={addBlankItem}>新增 QA</DropdownMenuItem>
+                  <DropdownMenuItem disabled={!items.length} onClick={() => exportQaAsJson(items, museumName)}>导出 JSON</DropdownMenuItem>
+                  <DropdownMenuItem disabled={!filteredItems.length} onClick={approveVisible}>通过当前筛选结果</DropdownMenuItem>
+                  <DropdownMenuItem variant="destructive" disabled={Boolean(generationRun)} onClick={resetWorkspace}>清空并恢复示例</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
 
-          <output className="flex items-center gap-2 rounded-xl border border-[#d9d0bd] bg-[#fffaf0] px-4 py-3 text-sm text-[#6f6245]">
-            <Sparkles className="size-4 text-[#b38b2c]" />
-            <span>{notice}</span>
-          </output>
+          <ReviewSetupDialog open={reviewDialogOpen} onOpenChange={setReviewDialogOpen} items={filteredItems} busy={Boolean(generationRun)} modelName={reviewAssignment.name} modelReady={reviewAssignment.ready} modelIssue={reviewAssignment.issue} sameModel={modelAssignments.qaReview === modelAssignments.qaGeneration} onOpenModels={() => { setReviewDialogOpen(false); setActiveView('models'); }} onStart={targets => void startMachineReview(targets)} />
 
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {[
-              ['知识总量', items.length, FileSpreadsheet, '条候选 QA'],
-              ['已通过', stats.approved, CheckCircle2, `${stats.progress}% 完成`],
-              ['需修改', stats.needsWork, CircleAlert, '建议优先处理'],
-              ['知识分类', stats.categoriesCount, Filter, '个维度已覆盖'],
-            ].map(([label, value, Icon, hint]) => (
-              <Card key={String(label)} className="border-0 bg-[#fffdf8] shadow-sm ring-[#ded7ca]">
-                <CardContent className="flex items-start justify-between gap-3">
-                  <div><p className="text-xs text-[#7a8881]">{label as string}</p><p className="mt-2 font-serif text-3xl font-semibold">{value as number}</p><p className="mt-1 text-xs text-[#87938e]">{hint as string}</p></div>
-                  <span className="grid size-9 place-items-center rounded-xl bg-[#e7eee9] text-[#2e604f]"><Icon className="size-4" /></span>
-                </CardContent>
-              </Card>
-            ))}
+          {notice && <output className="flex items-center justify-between gap-3 rounded-xl border border-info-border bg-info px-4 py-3 text-xs leading-5 text-info-foreground"><span>{notice}</span><button type="button" aria-label="关闭提示" className="shrink-0 px-2 text-muted-foreground" onClick={() => setNotice('')}>×</button></output>}
+
+          <div className="flex flex-wrap gap-1 border-b border-border pb-2" aria-label="按审核状态筛选">
+            {(['全部', ...statuses] as const).map((status) => <button key={status} type="button" aria-pressed={statusFilter === status} onClick={() => setStatusFilter(status)} className={`rounded-lg px-3 py-2 text-sm ${statusFilter === status ? 'bg-accent font-medium text-primary' : 'text-muted-foreground hover:bg-accent'}`}>{status} <span className="ml-1 text-xs tabular-nums">{status === '全部' ? items.length : items.filter((item) => item.status === status).length}</span></button>)}
           </div>
 
-          <Card className="border-0 bg-[#fffdf8] shadow-sm ring-[#ded7ca]">
-            <CardContent className="flex flex-col gap-3 lg:flex-row lg:items-center">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
               <div className="relative min-w-0 flex-1">
-                <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#829089]" />
-                <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索问题、答案或来源" className="h-10 border-[#d4cdbf] bg-[#faf8f2] pl-9" />
+                <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索问题、答案或来源" className="h-10 border-input bg-card pl-9" />
               </div>
               <NativeSelect aria-label="筛选知识分类" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value as '全部' | KnowledgeCategory)} className="w-full lg:w-40">
                 <NativeSelectOption value="全部">全部分类</NativeSelectOption>
                 {categories.map((category) => <NativeSelectOption key={category} value={category}>{category}</NativeSelectOption>)}
               </NativeSelect>
-              <NativeSelect aria-label="筛选审核状态" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as '全部' | ReviewStatus)} className="w-full lg:w-36">
-                <NativeSelectOption value="全部">全部状态</NativeSelectOption>
-                {statuses.map((status) => <NativeSelectOption key={status} value={status}>{status}</NativeSelectOption>)}
-              </NativeSelect>
-              <Button variant="ghost" className="text-[#6c7973]" onClick={() => { setSearch(''); setCategoryFilter('全部'); setStatusFilter('全部'); }}><ArchiveRestore /> 重置筛选</Button>
-            </CardContent>
-          </Card>
+              <details className="text-xs text-muted-foreground"><summary className="cursor-pointer whitespace-nowrap">机审筛选{machineFilter !== '全部' ? ` · ${machineFilter}` : ''}</summary><NativeSelect aria-label="筛选机审结果" className="mt-2 w-40" value={machineFilter} onChange={(event) => setMachineFilter(event.target.value as '全部' | MachineReviewStatus)}><NativeSelectOption value="全部">全部机审状态</NativeSelectOption>{machineReviewStatuses.map((status) => <NativeSelectOption key={status} value={status}>{status}</NativeSelectOption>)}</NativeSelect></details>
+              <Button variant="ghost" className="text-muted-foreground" onClick={() => { setSearch(''); setCategoryFilter('全部'); setStatusFilter('全部'); setMachineFilter('全部'); }}><ArchiveRestore /> 重置筛选</Button>
+          </div>
 
-          <div className="grid min-h-[560px] gap-4 2xl:grid-cols-[minmax(420px,0.9fr)_minmax(520px,1.1fr)]">
-            <Card className="border-0 bg-[#fffdf8] shadow-sm ring-[#ded7ca]">
-              <div className="flex items-center justify-between border-b border-[#e3ddd1] px-4 pb-3">
-                <div><p className="font-semibold">候选问答</p><p className="text-xs text-[#829089]">显示 {filteredItems.length} 条</p></div>
-                <Button variant="ghost" size="sm" className="text-[#8c4e40]" onClick={resetWorkspace}><Trash2 /> 清空并重置</Button>
+          <div className="grid items-start gap-4 min-[1100px]:grid-cols-[minmax(240px,0.8fr)_minmax(0,1.2fr)]">
+            <Card className="border-0 bg-card shadow-sm ring-border">
+              <div className="flex items-center justify-between gap-3 border-b border-border px-4 pb-3">
+                <div><p className="font-semibold">候选问答</p><p className="text-xs text-muted-foreground">显示 {filteredItems.length} 条</p></div>
+                <Button variant="ghost" size="sm" className="text-[#8d4c3d] hover:bg-[#fff0ec] hover:text-[#8d4c3d]" disabled={!hydrated || !items.length || Boolean(generationRun)} title={generationRun ? '请先完成或停止当前任务' : '清空全部 QA，包括筛选隐藏的条目'} onClick={clearQaItems}><Trash2 /> 一键清空</Button>
               </div>
               <div className="max-h-[650px] overflow-y-auto px-2">
                 {filteredItems.length ? filteredItems.map((item, index) => (
-                  <button key={item.id} type="button" aria-label={`审核问题：${item.question}`} onClick={() => setSelectedId(item.id)} className={`my-2 w-full rounded-xl border p-3 text-left transition ${selected?.id === item.id ? 'border-[#7ca08e] bg-[#eef4ef] shadow-sm' : 'border-transparent hover:border-[#e2dbce] hover:bg-[#f8f5ee]'} ${item.status !== '待审核' ? 'opacity-65 saturate-75' : ''}`}>
+                  <button key={item.id} type="button" aria-label={`审核问题：${item.question}`} onClick={() => setSelectedId(item.id)} className={`my-2 w-full rounded-xl border p-3 text-left transition ${selected?.id === item.id ? 'border-ring bg-accent shadow-sm' : 'border-transparent hover:border-border hover:bg-muted'} ${item.status !== '待审核' ? 'opacity-65 saturate-75' : ''}`}>
                     <div className="flex items-start gap-3">
-                      <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-[#ebe6d9] text-xs font-semibold text-[#6e776f]">{index + 1}</span>
+                      <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-muted text-xs font-semibold text-muted-foreground">{index + 1}</span>
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <Badge className={`border-0 ${categoryTone[item.category]}`}>{item.category}</Badge>
                           <Badge variant="outline" className={statusTone[item.status]}>{item.status}</Badge>
+                          {item.machineReview && <span className="text-xs text-muted-foreground">机审：{machineReviewStatus(item)}</span>}
                         </div>
-                        <p className="mt-2 line-clamp-2 font-medium leading-6 text-[#233e35]">{item.question}</p>
-                        <p className="mt-1 line-clamp-2 text-xs leading-5 text-[#75827c]">{item.answer}</p>
+                        <p className="mt-2 line-clamp-2 font-medium leading-6 text-foreground">{item.question}</p>
+                        <p className="mt-1 truncate text-xs leading-5 text-muted-foreground">{item.answer}</p>
                       </div>
                     </div>
                   </button>
                 )) : (
-                  <div className="grid min-h-80 place-items-center px-8 text-center"><div><Search className="mx-auto size-8 text-[#a5ada9]" /><p className="mt-3 font-medium">没有匹配结果</p><p className="mt-1 text-xs text-[#89938e]">调整筛选条件或导入新的资料。</p></div></div>
+                  <div className="grid min-h-80 place-items-center px-8 text-center"><div><Search className="mx-auto size-8 text-muted-foreground/50" /><p className="mt-3 font-medium">{items.length ? '没有匹配结果' : '暂无候选问答'}</p><p className="mt-1 text-xs text-muted-foreground">{items.length ? '调整筛选条件或导入新的资料。' : '导入新的资料或新增 QA 后开始审核。'}</p></div></div>
                 )}
               </div>
             </Card>
 
-            <Card className="border-0 bg-[#fffdf8] shadow-sm ring-[#ded7ca]">
+            <Card className="border-0 bg-card shadow-sm ring-border">
               {selected ? (
                 <CardContent className="space-y-5">
-                  <div className="flex flex-col justify-between gap-3 border-b border-[#e3ddd1] pb-4 sm:flex-row sm:items-center">
-                    <div><p className="font-serif text-xl font-semibold">审核当前问答</p><p className="mt-1 text-xs text-[#83908a]">修改会自动保存到本机</p></div>
-                    <div className="flex gap-2">
-                      <Button variant="outline" className="border-[#d2b0a7] text-[#8d4c3d]" onClick={removeCurrent}><Trash2 /> 删除</Button>
+                  <div className="flex flex-col justify-between gap-3 border-b border-border pb-4 sm:flex-row sm:items-center">
+                    <div><p className="font-sans text-xl font-semibold">审核当前问答</p><p className="mt-1 text-xs text-muted-foreground">修改会自动保存到本机</p></div>
+                    <div className="flex flex-wrap gap-2">
+                      <DropdownMenu><DropdownMenuTrigger render={<Button variant="outline" />}>更多</DropdownMenuTrigger><DropdownMenuContent align="end" className="w-36"><DropdownMenuItem onClick={() => updateItem(selected.id, { status: '待审核' })}>退回待审核</DropdownMenuItem><DropdownMenuItem variant="destructive" onClick={removeCurrent}>删除此条</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
                       <Button variant="outline" className="border-[#d2b0a7] text-[#8d4c3d]" onClick={() => reviewAndNext('需修改')}><CircleAlert /> 标记修改</Button>
-                      <Button className="bg-[#1f5143] text-white hover:bg-[#173e34]" onClick={() => reviewAndNext('已通过')}><Check /> 审核通过</Button>
+                      <Button className="bg-primary text-primary-foreground hover:bg-primary-hover" onClick={() => reviewAndNext('已通过')}><Check /> 通过并下一条</Button>
                     </div>
                   </div>
 
@@ -528,31 +569,24 @@ export default function Home() {
                         {categories.map((category) => <NativeSelectOption key={category} value={category}>{category}</NativeSelectOption>)}
                       </NativeSelect>
                     </div>
-                    <div className="space-y-2 text-sm font-medium">审核状态
-                      <NativeSelect aria-label="当前问答审核状态" value={selected.status} onChange={(event) => updateItem(selected.id, { status: event.target.value as ReviewStatus })} className="w-full">
-                        {statuses.map((status) => <NativeSelectOption key={status} value={status}>{status}</NativeSelectOption>)}
-                      </NativeSelect>
-                    </div>
+
                   </div>
 
                   <label htmlFor="qa-question" className="block space-y-2 text-sm font-medium">问题
-                    <Textarea id="qa-question" value={selected.question} onChange={(event) => updateItem(selected.id, { question: event.target.value, status: selected.status === '已通过' ? '待审核' : selected.status })} className="min-h-20 border-[#d4cdbf] bg-[#faf8f2] text-base leading-6" />
+                    <Textarea id="qa-question" value={selected.question} onChange={(event) => updateItem(selected.id, { question: event.target.value, status: selected.status === '已通过' ? '待审核' : selected.status })} className="min-h-20 border-input bg-card text-base leading-6" />
                   </label>
                   <label htmlFor="qa-answer" className="block space-y-2 text-sm font-medium">答案
-                    <Textarea id="qa-answer" value={selected.answer} onChange={(event) => updateItem(selected.id, { answer: event.target.value, status: selected.status === '已通过' ? '待审核' : selected.status })} className="min-h-48 border-[#d4cdbf] bg-[#faf8f2] leading-7" />
+                    <Textarea id="qa-answer" value={selected.answer} onChange={(event) => updateItem(selected.id, { answer: event.target.value, status: selected.status === '已通过' ? '待审核' : selected.status })} className="min-h-48 border-input bg-card leading-7" />
                   </label>
                   <label htmlFor="qa-source" className="block space-y-2 text-sm font-medium">来源
-                    <Input id="qa-source" value={selected.source} onChange={(event) => updateItem(selected.id, { source: event.target.value })} className="h-10 border-[#d4cdbf] bg-[#faf8f2]" />
+                    <Input id="qa-source" value={selected.source} onChange={(event) => updateItem(selected.id, { source: event.target.value })} className="h-10 border-input bg-card" />
                   </label>
+                  <MachineReviewPanel item={selected} busy={Boolean(generationRun)} onRetry={() => { if (window.confirm('对当前 QA 调用审核模型？会产生 API 用量。')) void startMachineReview([selected]); }} onAdopt={() => adoptSuggestion(selected.id)} />
 
-                  <div className="grid gap-3 rounded-xl border border-[#ddd5c7] bg-[#f7f4ec] p-4 text-xs text-[#66766f] sm:grid-cols-3">
-                    <div><p className="text-[#89948f]">自动可信度</p><p className="mt-1 text-sm font-semibold text-[#28493e]">{Math.round(selected.confidence * 100)}%</p></div>
-                    <div><p className="text-[#89948f]">答案长度</p><p className="mt-1 text-sm font-semibold text-[#28493e]">{selected.answer.length} 字</p></div>
-                    <div><p className="text-[#89948f]">最后更新</p><p className="mt-1 text-sm font-semibold text-[#28493e]">{new Date(selected.updatedAt).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</p></div>
-                  </div>
+
                 </CardContent>
               ) : (
-                <div className="grid min-h-[560px] place-items-center p-8 text-center"><div><FileSpreadsheet className="mx-auto size-10 text-[#a7afaa]" /><p className="mt-4 font-serif text-xl font-semibold">选择一条问答开始审核</p></div></div>
+                <div className="grid min-h-[560px] place-items-center p-8 text-center"><div><FileSpreadsheet className="mx-auto size-10 text-muted-foreground/50" /><p className="mt-4 font-sans text-xl font-semibold">选择一条问答开始审核</p></div></div>
               )}
             </Card>
           </div>

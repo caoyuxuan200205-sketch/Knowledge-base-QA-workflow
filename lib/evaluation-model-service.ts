@@ -76,7 +76,7 @@ export async function generateEvaluationWithModel(
 
   const modelDimensions: EvaluationDimension[] = dimensions.filter((dimension) => dimension !== '标准问答');
   const jobs = modelDimensions.length
-    ? splitBatches(qaItems, 6).map((batch) => ({ batch, dimensions: modelDimensions }))
+    ? splitBatches(qaItems, 4).map((batch) => ({ batch, dimensions: modelDimensions }))
     : [];
   const total = jobs.length;
   let completed = 0;

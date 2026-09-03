@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@/components/ui/dropdown-menu';
 import { inspectSourceFile, type ParsedSourceFile } from '@/lib/museum-workflow';
 
-const MAX_IMPORT_FILE_SIZE_MB = 20;
+const MAX_IMPORT_FILE_SIZE_MB = 100;
 
 export interface ImportHistoryItem {
   id: string;
@@ -181,7 +181,7 @@ export function ImportCenter({ sources, history, activeModelName, modelReady, en
           </DropdownMenu>
         </div>
       </div>
-      <details className="text-xs leading-5 text-muted-foreground"><summary className="cursor-pointer">处理说明</summary><p className="mt-2">默认追加生成，已有相同问题会去重。文本型 PDF 自动解析，扫描页提示 OCR 并跳过。Word 支持 .docx（单个文件最多 20 MB），提取正文和表格文字，图片不做 OCR；旧版 .doc 请先另存为 .docx。生成前跳过可识别的文件编制信息和未确认方案；已有 QA 直接迁移。</p></details>
+      <details className="text-xs leading-5 text-muted-foreground"><summary className="cursor-pointer">处理说明</summary><p className="mt-2">默认追加生成，已有相同问题会去重。文本型 PDF 自动解析，扫描页提示 OCR 并跳过。Word 支持 .docx（单个文件最多 100 MB），提取正文和表格文字，图片不做 OCR；旧版 .doc 请先另存为 .docx。生成前跳过可识别的文件编制信息和未确认方案；已有 QA 直接迁移。</p></details>
       {(generationStatus || runInProgress || !modelReady) && <div className={`rounded-xl border px-4 py-3 text-sm ${!modelReady ? 'border-[#d9b09f] bg-[#fff1ed] text-[#8c4d3f]' : 'border-info-border bg-info text-info-foreground'}`}>{!modelReady ? `QA 生成：${configurationIssue}。请到模型配置页完善。` : runInProgress && !generationStatus ? `后台生成进行中：${runLabel}。已完成的批次已实时入库，可到“QA 生产与审核”页先审核，不要刷新页面。` : generationStatus}</div>}
 
       {history.length > 0 && (

@@ -1,7 +1,7 @@
 import { unzipSync, strFromU8 } from 'fflate';
 import { createReviewPassages, type ReviewDocument } from '@/lib/review-materials';
 
-const MAX_FILE_BYTES = 20 * 1024 * 1024;
+const MAX_FILE_BYTES = 100 * 1024 * 1024;
 const MAX_TEXT_CHARACTERS = 1_000_000;
 
 export function extractDocxXml(data: Uint8Array) {
@@ -48,7 +48,7 @@ export function docxSections(xml: string, fileName: string) {
 export async function readReviewDocument(file: File): Promise<ReviewDocument> {
   const document: ReviewDocument = { id: crypto.randomUUID(), fileName: file.name, size: file.size, selected: true, passages: [], warnings: [], incomplete: false };
   try {
-    if (file.size > MAX_FILE_BYTES) throw new Error('单个文件不能超过 20 MB，请拆分后上传。');
+    if (file.size > MAX_FILE_BYTES) throw new Error('单个文件不能超过 100 MB，请拆分后上传。');
     const extension = file.name.split('.').pop()?.toLowerCase();
     let sections: Array<{ source: string; text: string }>;
     if (extension === 'pdf') {

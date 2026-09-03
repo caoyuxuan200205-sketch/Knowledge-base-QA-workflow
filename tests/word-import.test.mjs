@@ -20,8 +20,8 @@ test('Word import reports legacy, corrupt, missing-body and oversized files with
     assert.match(parsed.error, /Word 解析失败/);
     assert.deepEqual(parsed.sheets, []);
   }
-  const oversized = await inspectSourceFile({ name: '大文件.docx', size: 21 * 1024 * 1024, arrayBuffer() { assert.fail('Must reject before reading'); } });
-  assert.match(oversized.error, /20 MB/);
+  const oversized = await inspectSourceFile({ name: '大文件.docx', size: 101 * 1024 * 1024, arrayBuffer() { assert.fail('Must reject before reading'); } });
+  assert.match(oversized.error, /100 MB/);
 });
 
 const original = '青铜鼎出土于汉墓，高20厘米，是重要的古代礼器，用于祭祀。';

@@ -217,7 +217,7 @@ export async function inspectSourceFile(file: File): Promise<ParsedSourceFile> {
 
   if (extension === 'docx') {
     try {
-      if (file.size > 20 * 1024 * 1024) throw new Error('单个 Word 文件不能超过 20 MB，请拆分后上传。');
+      if (file.size > 100 * 1024 * 1024) throw new Error('单个 Word 文件不能超过 100 MB，请拆分后上传。');
       const { extractDocxXml, docxSections } = await import('@/lib/review-material-reader');
       const parsed = docxSections(extractDocxXml(new Uint8Array(await file.arrayBuffer())), file.name);
       if (!parsed.sections.length) throw new Error('Word 中没有可用文字；图片或扫描内容请先进行 OCR。');
